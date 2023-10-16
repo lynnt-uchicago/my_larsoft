@@ -1,0 +1,27 @@
+#ignore all kind of files
+*.*
+
+#except python files
+!*.ipynb
+!*.py
+# and root macros
+!*.C
+# and this file!
+!*.gitignore
+# and documentation
+!*.md
+
+# ignore these directories too... 
+# larsoft
+*/localProducts*/
+*/build*/
+*/srcs/
+
+# wirecell 
+*/wct/
+*/wct_install/
+*/wire-cell-data/
+*/cfg/
+*/cfg/*
+*/wscript_build 
+

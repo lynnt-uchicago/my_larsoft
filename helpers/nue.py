@@ -3,11 +3,24 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 import matplotlib as mpl
+import pdg
+api = pdg.connect()
 
 # dictionary mapping signal to ints. Signal == 0 is assumed to be the desired topology. 
-signal_dict = {"nueCC":0,"numuCC":1,"nuNC":2,"nuOther":3,"dirt":4,"cosmic":5}
+signal_dict = {"nueCC":0,"numuCC":1,"nuNC":2,"nuOther":3,"dirt":4,"cosmic":5, "intime":6}
 # dictionary mapping particle to pdg code
-pdg_dict =    {"elec":11, "muon":13, "gamma":22, "proton":2212, "pi0":111, "pi":211, "neu":2112, "other":0}
+
+pdg_dict = {
+    "elec": {"pdg":11, "mass":0.000511},
+    "muon": {"pdg":13, "mass":0.105658},
+    "gamma": {"pdg":22, "mass":0},
+    "proton": {"pdg":2212, "mass":0.938272},
+    "pi0": {"pdg":111, "mass":0.134976},
+    "pi": {"pdg":211, "mass":0.139570},
+    "neu": {"pdg":2112, "mass":0.939565},
+    "other": {"pdg":0, "mass":0}
+}
+
 
 nue_scale = 1.0 # 1.0 is the default value
 
@@ -135,10 +148,11 @@ def get_slices(df: pd.DataFrame,int_type):
 
 def plot_var(df: pd.DataFrame, var: str, bins: np.ndarray, 
              df_add: pd.DataFrame = None,
-             label: str = "", title: str = "", 
+             label: str = "", title: str = "",
+             stacked: bool = True, 
              cut_val: list = None, mult_factor: float = None):
     """
-    Plots a variable for each interaction type in a stacked histogram.
+    Plots a variable for each interaction type in a histogram.
     
     Parameters
     ----------
@@ -153,6 +167,8 @@ def plot_var(df: pd.DataFrame, var: str, bins: np.ndarray,
         x-axis label. If empty, uses the variable name
     title: str
         title of the plot
+    stacked: bool
+        if True, plots a stacked histogram
     cut_val: list
         if specified, plots vertical lines at the specified values
     mult_factor: float
@@ -162,44 +178,63 @@ def plot_var(df: pd.DataFrame, var: str, bins: np.ndarray,
     -----
     `df_add` should be the dataframe you are scaling. `df` remains unscaled.
     """
-    histtype="step"
-    lw = 2
-    # plot signal==0 histogram
-    if (df_add is None):
-        if mult_factor==None:
-            plt.hist(get_slices(df,0)[var],bins=bins,histtype=histtype,lw=lw,label="nue cc",zorder=5)
-        else:
-            hist_values, bin_edges = np.histogram(get_slices(df,0)[var],bins=bins)
-            plt.step(x=bin_edges[:-1], y=np.round(hist_values*mult_factor),where="post",linewidth=lw, label=f"nueCC [x{mult_factor:.2f}]",zorder=5)
-        # plot other histograms 
-        for i, entry in enumerate(signal_dict):
-            if i==0:
-                continue
-            plt.hist(get_slices(df,i)[var],bins=bins,histtype=histtype,lw=lw,label=entry)
-    elif (df_add is not None):
-        # combine the two dataframes and scale 
-        for i, entry in enumerate(signal_dict):
-            hist_values, bin_edges = np.histogram(get_slices(df,i)[var],bins=bins)
-            add_hist_values, add_bin_edges = np.histogram(get_slices(df_add,i)[var],bins=bins)
-            if (i==0 and mult_factor!=None):
-                plt.step(x=bin_edges[:-1], y=np.round((hist_values + nue_scale*add_hist_values)*mult_factor),where="post",linewidth=lw, label=entry + f" [x{mult_factor:.2f}]",zorder=5)
-            elif (i==0 and mult_factor==None):
-                plt.step(x=bin_edges[:-1], y=np.round((hist_values + nue_scale*add_hist_values)),where="post",linewidth=lw, label=entry,zorder=5)
-            else:
-                plt.step(x=bin_edges[:-1], y=np.round((hist_values + nue_scale*add_hist_values)),where="post",linewidth=lw, label=entry,zorder=5)
+    if mult_factor==None: mult=1.0
+    else: mult=mult_factor
+    bin_steps   = bins[1:]
+    bin_centers = (bins[:-1] + bins[1:])/2
+    bin_spacing = bins[1] - bins[0]
+    colors = ["C0","C1","C2","C3","C4","C5","C6"]
+    
+    hists   = np.zeros((len(signal_dict),len(bin_steps)))
+    steps   = np.zeros((len(signal_dict),len(bin_steps)))
+    bottom  = np.zeros((len(signal_dict),len(bin_steps)))
+    order =  np.arange(len(signal_dict),0,step=-1)
 
-    # plot vertical lines
+    # plot signal==0 histogram
+    for i, entry in enumerate(signal_dict):
+        hist, edges = np.histogram(get_slices(df,i)[var],bins=bins)
+        hists[i] = hist
+    if (df_add is not None):
+        for i, entry in enumerate(signal_dict):
+            hist, edges = np.histogram(get_slices(df_add,i)[var],bins=bins)
+            hists[i] = hists[i] + nue_scale*hist
+    
+    hists[0] = mult*hists[0]
+    hists_sum = np.sum(hists,axis=1)
+    
+    for i, entry in enumerate(signal_dict):
+        plot_label = entry
+        if ((mult_factor!=None) & (i==0)):
+            plot_label = entry + f" [x {mult_factor}]"
+        # plot_label = entry + f" [{int(hists_sum[i]):,}]"
+        # if ((mult_factor!=None) & (i==0)): 
+        #     plot_label = entry + f" [{int(hists_sum[i]/mult_factor):,}] x {mult_factor}"
+        if stacked==False:
+            plt.step(bins, np.insert(hists[i],obj=0,values=hists[i][0]), label=plot_label,zorder=order[i])
+        if stacked==True: 
+            if i==0: steps[i] = hists[i]; 
+            else:    steps[i] = hists[i] + steps[i-1]; bottom[i] = steps[i-1]
+            # need to append a value at the beginning so that the step will be plotted across the first bin
+            fix_step = np.insert(steps[i],obj=0,values=steps[i][0])
+            plt.step(bins,fix_step, label=plot_label, zorder=order[i],color=colors[i])
+    
+    # fix for strange ylim behavior 
     ymin, ymax = plt.ylim()
+    if stacked==True:
+        for i, entry in enumerate(signal_dict):
+            plt.bar( bin_centers, hists[i], bottom=bottom[i], width=bin_spacing, alpha=0.25, color=colors[i])
+       
+    # plot vertical lines
     if cut_val != None:
         for i in range(len(cut_val)):
             plt.vlines(cut_val[i],ymin,ymax,lw=2,color="gray",linestyles="--",zorder=6)
-    plt.ylim(ymin,ymax)   
-    if label == "":
-        plt.xlabel(var)
-    if title == "":
-        plt.title(var+" distribution (for each interaction type)")
-    else:
-        plt.title(title)
+    plt.ylim(0,ymax)
+    
+    if label == "": plt.xlabel(var)
+    else: plt.xlabel(label)
+    if title == "": plt.title(var+" distribution (for each interaction type)")
+    else: plt.title(title)
+    
     plt.legend()
     plt.show()
     
@@ -231,14 +266,15 @@ def plot_var_pdg(df: pd.DataFrame, var: str, bins: np.ndarray,
     lw = 2
     other_df = df.copy()
     add_other_df = df_add.copy() if df_add is not None else None
-    for key, value in pdg_dict.items():
+    for key in pdg_dict:
+        pdg_value = pdg_dict[key]["pdg"]
         # ignore neutrons and other (take care of "other" more explicitly at the end)
         if (key == "neu" or key == "other"):
             continue
-        this_df = df[df.pfp_shw_truth_p_pdg==value]
+        this_df = df[df.pfp_shw_truth_p_pdg==pdg_value]
         # if we have the additional dataframe, need to scale it 
         if (df_add is not None):
-            add_df = df_add[df_add.pfp_shw_truth_p_pdg==value]
+            add_df = df_add[df_add.pfp_shw_truth_p_pdg==pdg_value]
             hist_values, bin_edges = np.histogram(this_df[var],bins=bins)
             add_hist_values, add_bin_edges = np.histogram(add_df[var],bins=bins)
             plt.step(x=bin_edges[:-1], y=np.round((hist_values + nue_scale*add_hist_values)),where="post",linewidth=lw, label=key,zorder=5)
@@ -247,9 +283,9 @@ def plot_var_pdg(df: pd.DataFrame, var: str, bins: np.ndarray,
             plt.hist(this_df[var],bins=bins,histtype=histtype,lw=lw,label=key)
         
         # if the pdg is not found within the dict, make sure to save it in "other_df"
-        other_df = other_df[other_df.pfp_shw_truth_p_pdg!=value]
+        other_df = other_df[other_df.pfp_shw_truth_p_pdg!=pdg_value]
         if (df_add is not None):
-            add_other_df = add_other_df[add_other_df.pfp_shw_truth_p_pdg!=value]    
+            add_other_df = add_other_df[add_other_df.pfp_shw_truth_p_pdg!=pdg_value]    
     
     # if there are other pdgs
     if (len(other_df)>0):
@@ -386,8 +422,37 @@ def cutShower(df: pd.DataFrame, col:str="pfp_trackScore"):
     col: str
         column name of the track score
     """
-    maskShower = (df.groupby(["ntuple","entry","rec.slc__index"])[col].transform(lambda x: (x < 0.6).any()))
-    return df[maskShower]
+    score_df = df.query(col+" > 0") # require that we look at pfps with a sensible track score
+    score_df = score_df[(score_df[col] == score_df.groupby(["ntuple","entry","rec.slc__index"])[col].transform(min))]
+    score_df = score_df.query("pfp_trackScore < 0.6")[["ntuple","entry","rec.slc__index"]] # require that the minimum track score is < 0.6
+    return df.merge(score_df,how="inner")
+
+def cutShowerEnergy(df: pd.DataFrame, 
+                    shw_col:str="shw_energy",
+                    score_col:str="pfp_trackScore",
+                    shw_cut_val:float=0.1,
+                    score_cut_val:float=0.6):
+    """
+    Selects slices that have at least one pfp that fulfills the conditions: has a trackScore < 0.6 and reco
+    shower energy greater than `cut_val` (default 0.1 Gev, or 100 MeV).
+    
+    Parameters
+    ----------
+    df: input dataframe
+    shw_col: str
+        column name of the shower energy
+    score_col: str
+        column name of the track score
+    shw_cut_val: float
+        cut value for the shower energy
+    score_cut_val: float
+        cut value for the track score
+    """
+    shw_df = df.query("(" + score_col+" < @score_cut_val ) & ("+score_col+" > 0)")
+    max_df = shw_df[(shw_df[shw_col] == shw_df.groupby(["ntuple","entry","rec.slc__index"])[shw_col].transform(max))]
+    max_df = max_df.query(shw_col+" > @shw_cut_val")
+    slc_max_df = max_df[['ntuple','entry','rec.slc__index']].drop_duplicates()
+    return df.merge(slc_max_df,how="inner",on=['ntuple','entry','rec.slc__index'])
 
 def cutPreselection(df: pd.DataFrame, 
                     whereRecoVtxFV: bool=True, 
@@ -510,49 +575,45 @@ def getPDGCounts(nuprim_df: pd.DataFrame):
     Intended to be used on the multi-index nuprim dataframe. Needs to be merged to the neutrino event df after.
     """
     flat_nuprim_df = flatten_df(nuprim_df)
-    # get starting momentum
-    flat_nuprim_df["prim_startp"] = np.sqrt(flat_nuprim_df.prim_startp_x**2 + flat_nuprim_df.prim_startp_y**2 + flat_nuprim_df.prim_startp_z**2)
     flat_nuprim_df["prim_abs_pdg"] = abs(flat_nuprim_df["prim_pdg"])
     flat_nuprim_df["prim_depE"] = flat_nuprim_df.prim_startE - flat_nuprim_df.prim_endE
 
-    # set protons with momentum < 200 MeV as other
-    # set charged pions with momentum < 100 as other
-    flat_nuprim_df["prim_abs_pdg"] = np.where( ((flat_nuprim_df.prim_abs_pdg == 2212) & (flat_nuprim_df.prim_startp < 0.2) ), -1, flat_nuprim_df.prim_abs_pdg)
-    flat_nuprim_df["prim_abs_pdg"] = np.where( ((flat_nuprim_df.prim_abs_pdg == 211) &  (flat_nuprim_df.prim_startp < 0.1) ), -1, flat_nuprim_df.prim_abs_pdg)
-    # get whether the primaries are contained 
+    # if the pdg is > 1e9, it is a nucleus 
+    flat_nuprim_df["prim_abs_pdg"] = np.where(flat_nuprim_df.prim_abs_pdg>1e9,
+                                            1e9,
+                                            flat_nuprim_df.prim_abs_pdg)
+
+    # if the pdg is -1, it's "invisible"
+    flat_nuprim_df["prim_abs_pdg"] = np.where(flat_nuprim_df.prim_depE < 0.05,
+                                            -1,
+                                            flat_nuprim_df["prim_abs_pdg"])
+
     flat_nuprim_df["prim_exit"] =  np.where((((abs(flat_nuprim_df["prim_end_x"]) > 195) |
-                                              (abs(flat_nuprim_df["prim_end_y"]) > 195) &
-                                              (flat_nuprim_df["prim_end_z"] < 5)    | (flat_nuprim_df["prim_end_z"] > 495))),
+                                                (abs(flat_nuprim_df["prim_end_y"]) > 195) &
+                                                (flat_nuprim_df["prim_end_z"] < 5)    | (flat_nuprim_df["prim_end_z"] > 495))),
                                             True,False)
-    
-    # move columns of unspecified pdg into column "nother" and drop original column
-    pdg_counts = (flat_nuprim_df.groupby(["ntuple","entry","rec.mc.nu__index"])["prim_abs_pdg"]).value_counts().unstack(fill_value=0).reset_index()
-    pdg_counts["nother"] = 0
-    
-    # get total deposited energy for each neutrino event
+
+    # # get total deposited energy for each neutrino event
     depE_sum =  flat_nuprim_df.groupby(["ntuple","entry","rec.mc.nu__index"])["prim_depE"].sum().reset_index().rename(columns={"prim_depE":"total_prim_depE"})
-    
-    # get whether the primaries are contained
+    # # get whether the primaries are contained
     prim_cont = (flat_nuprim_df.groupby(["ntuple","entry","rec.mc.nu__index"])["prim_exit"]).sum().reset_index().rename(columns={"prim_exit":"prim_exit_count"})
     prim_cont["prim_cont"] = np.where(prim_cont["prim_exit_count"] == 0,True,False)
-    
-    # merge the dataframes
-    pdg_counts = depE_sum.merge(pdg_counts,on=["ntuple","entry","rec.mc.nu__index"])
+    prim_cont.drop(columns=["prim_exit_count"],inplace=True)
+    prim_cont = prim_cont.merge(depE_sum,on=["ntuple","entry","rec.mc.nu__index"])
+
+    # get counts of each PDG type and rename the columns to the PDG names 
+    pdg_counts = (flat_nuprim_df.groupby(["ntuple","entry","rec.mc.nu__index"])["prim_abs_pdg"]).value_counts().unstack(fill_value=0).reset_index()
+    for col in pdg_counts.columns:
+        if ((type(col) is float)):
+            if ((col > 0) & (col < 1e9)):
+                name = api.get_particle_by_mcid(col).name
+                pdg_counts.rename(columns={col:name},inplace=True)
+            if (col >=1e9):
+                pdg_counts.rename(columns={col:"nucleus"},inplace=True)
+            if (col ==-1):
+                pdg_counts.rename(columns={col:"invisible"},inplace=True)
+
     pdg_counts = pdg_counts.merge(prim_cont,on=["ntuple","entry","rec.mc.nu__index"])
-    for column in pdg_counts.copy().columns:
-        if type(column)!=int:
-            continue
-        if (abs(column) in pdg_dict.values()) == False:
-            pdg_counts["nother"] += pdg_counts[column]
-            pdg_counts.drop(columns=[column],inplace=True)
-    
-    # rename columns from ints to strings
-    for pdg_value in pdg_dict.values():
-        for col in pdg_counts.columns:
-            if col == pdg_value:
-                new_col = list(pdg_dict.keys())[list(pdg_dict.values()).index(pdg_value)]
-                pdg_counts.rename(columns={col:"n"+new_col},inplace=True)
-                
     return pdg_counts
 
 def getPFP(slcshw_df: pd.DataFrame, 

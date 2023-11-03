@@ -8,21 +8,24 @@ api = pdg.connect()
 
 # dictionary mapping signal to ints. Signal == 0 is assumed to be the desired topology. 
 signal_dict = {"nueCC":0,"numuCC":1,"nuNC":2,"nuOther":3,"dirt":4,"cosmic":5, "intime":6}
+signal_labels = list(signal_dict.keys())
 # dictionary mapping particle to pdg code
 
 pdg_dict = {
-    "elec": {"pdg":11, "mass":0.000511},
-    "muon": {"pdg":13, "mass":0.105658},
+    "e-": {"pdg":11, "mass":0.000511},
+    "mu-": {"pdg":13, "mass":0.105658},
     "gamma": {"pdg":22, "mass":0},
-    "proton": {"pdg":2212, "mass":0.938272},
+    "p": {"pdg":2212, "mass":0.938272},
     "pi0": {"pdg":111, "mass":0.134976},
-    "pi": {"pdg":211, "mass":0.139570},
-    "neu": {"pdg":2112, "mass":0.939565},
+    "pi+": {"pdg":211, "mass":0.139570},
+    "n": {"pdg":2112, "mass":0.939565},
     "other": {"pdg":0, "mass":0}
 }
 
+colors = ["C0","C1","C2","C3","C4","C5","C6"]
 
 nue_scale = 1.0 # 1.0 is the default value
+int_scale = 1.0 # scale for intime cosmics
 
 def get_hist_weights(series: pd.Series):
     return np.ones_like(series)/float(len(series))
@@ -74,16 +77,18 @@ def flatten_df(df: pd.DataFrame):
 
 def get_slc(df: pd.DataFrame):
     """
-    Returns a dataframe containing only slices (duplicate slices are not dropped, pfps are dropped)
+    Returns a dataframe containing only slices (duplicate slices are not dropped, pfps are dropped).
+    "Duplicate" slices references slices corresponding to the same neutrino interaction. In other words,
+    allows "slice double counting." 
     """
     nodup_df = df.drop_duplicates(subset=["ntuple","entry","rec.slc__index"])
     return nodup_df
 
 def get_evt(df: pd.DataFrame):
     """
-    Returns a dataframe containing only events (duplicate slices are dropped)
+    Returns a dataframe containing only events (duplicate slices are dropped).
     """
-    nodup_df = df.drop_duplicates(subset=["ntuple","nu_index","entry"])
+    nodup_df = df.drop_duplicates(subset=["ntuple","entry","rec.mc.nu__index"])
     return nodup_df
 
 def get_signal_evt(df: pd.DataFrame):
@@ -92,7 +97,7 @@ def get_signal_evt(df: pd.DataFrame):
     Assumes the input dataframe has a "signal" column, where signal=0. 
     """
     # only run on flattened dataframes 
-    nodup_df = df.drop_duplicates(subset=["ntuple","nu_index","entry"])
+    nodup_df = df.drop_duplicates(subset=["ntuple","entry","rec.mc.nu__index"])
     return nodup_df[nodup_df.signal == 0]
 
 def get_backgr_evt(df: pd.DataFrame):
@@ -107,13 +112,15 @@ def get_backgr_evt(df: pd.DataFrame):
     -------
     backgr_df: dataframe containing only background events
     """
-    nodup_df = df.drop_duplicates(subset=["ntuple","nu_index","entry"])
+    nodup_df = df.drop_duplicates(subset=["ntuple","entry","rec.mc.nu__index"])
     slices_df = nodup_df[nodup_df["signal"]!=0]
     return slices_df
 
 def get_signal_slc(df: pd.DataFrame):
     """
     Returns a dataframe containing only signal slices (Duplicate slices are not dropped, pfps are dropped)
+    "Duplicate" slices references slices corresponding to the same neutrino interaction. In other words,
+    allows "slice double counting."  
     """
     nodup_df = df.drop_duplicates(subset=["ntuple","entry","rec.slc__index"])
     return nodup_df[nodup_df.signal==0]
@@ -121,6 +128,8 @@ def get_signal_slc(df: pd.DataFrame):
 def get_backgr_slc(df: pd.DataFrame):
     """
     Returns a dataframe containing only background slices (Duplicate slices are not dropped, pfps are dropped)
+    "Duplicate" slices references slices corresponding to the same neutrino interaction. In other words,
+    allows "slice double counting." 
     """
     nodup_df = df.drop_duplicates(subset=["ntuple","entry","rec.slc__index"])
     return nodup_df[nodup_df.signal!=0]
@@ -128,6 +137,8 @@ def get_backgr_slc(df: pd.DataFrame):
 def get_slices(df: pd.DataFrame,int_type):
     """
     Returns a dataframe containing slices of a certain interaction type (Duplicate slices are not dropped.)
+    "Duplicate" slices references slices corresponding to the same neutrino interaction. In other words,
+    allows "slice double counting." 
     
     Parameters
     ----------
@@ -146,71 +157,65 @@ def get_slices(df: pd.DataFrame,int_type):
 
 ### PLOTTING ###
 
-def plot_var(df: pd.DataFrame, var: str, bins: np.ndarray, 
-             df_add: pd.DataFrame = None,
+def plot_var(df, var: str, bins: np.ndarray,
              label: str = "", title: str = "",
              stacked: bool = True, 
-             cut_val: list = None, mult_factor: float = None):
+             scale: list = None,
+             mult_factor: float = None,
+             cut_val: list = None):
     """
     Plots a variable for each interaction type in a histogram.
     
     Parameters
     ----------
-    df: input dataframe
+    df: input dataframe or list of dataframes
     var: str
         variable to be plotted, must be a column in the dataframe
     bins: np.ndarray
         histogram binning
-    df_add: pd.DataFrame
-        if specified, adds this dataframe to the plot with scaling factor set by nue.nue_scale.
     label: str
         x-axis label. If empty, uses the variable name
     title: str
         title of the plot
     stacked: bool
         if True, plots a stacked histogram
+    scale: list of floats
+        if specified, scales the histograms from df by the specified values 
+    mult_factor: float
+        if specified, multiplies the signal histogram by this factor
     cut_val: list
         if specified, plots vertical lines at the specified values
-    mult_factor: float
-        if specified, multiplies the nueCC histogram by this factor
-        
-    Notes
-    -----
-    `df_add` should be the dataframe you are scaling. `df` remains unscaled.
     """
+    if (type(df) is not list): df = [df]
+    if scale == None: scale = list(np.ones(len(df)))
+    if (len(scale) != len(df)): 
+        print("Error: scale must be the same length as df")
+        return 
     if mult_factor==None: mult=1.0
     else: mult=mult_factor
+    
     bin_steps   = bins[1:]
     bin_centers = (bins[:-1] + bins[1:])/2
     bin_spacing = bins[1] - bins[0]
-    colors = ["C0","C1","C2","C3","C4","C5","C6"]
     
     hists   = np.zeros((len(signal_dict),len(bin_steps)))
-    steps   = np.zeros((len(signal_dict),len(bin_steps)))
-    bottom  = np.zeros((len(signal_dict),len(bin_steps)))
-    order =  np.arange(len(signal_dict),0,step=-1)
+    steps   = np.zeros((len(signal_dict),len(bin_steps))) # for the step plot
+    bottom  = np.zeros((len(signal_dict),len(bin_steps))) # for the bar plot 
+    order   = np.arange(len(signal_dict),0,step=-1)
 
-    # plot signal==0 histogram
-    for i, entry in enumerate(signal_dict):
-        hist, edges = np.histogram(get_slices(df,i)[var],bins=bins)
-        hists[i] = hist
-    if (df_add is not None):
+    for this_df, this_scale in zip(df,scale):
         for i, entry in enumerate(signal_dict):
-            hist, edges = np.histogram(get_slices(df_add,i)[var],bins=bins)
-            hists[i] = hists[i] + nue_scale*hist
-    
+            hist, _____ = np.histogram(get_slices(this_df,i)[var],bins=bins)
+            hists[i] = hists[i] + this_scale*hist
+
     hists[0] = mult*hists[0]
-    hists_sum = np.sum(hists,axis=1)
     
     for i, entry in enumerate(signal_dict):
-        plot_label = entry
-        if ((mult_factor!=None) & (i==0)):
-            plot_label = entry + f" [x {mult_factor}]"
-        # plot_label = entry + f" [{int(hists_sum[i]):,}]"
-        # if ((mult_factor!=None) & (i==0)): 
-        #     plot_label = entry + f" [{int(hists_sum[i]/mult_factor):,}] x {mult_factor}"
+        plot_label = signal_labels[i]
+        
+        if ((mult_factor!=None) & (i==0)): plot_label = signal_labels[i] + f" [x{mult_factor}]"
         if stacked==False:
-            plt.step(bins, np.insert(hists[i],obj=0,values=hists[i][0]), label=plot_label,zorder=order[i])
+            plt.step(bins, np.insert(hists[i],obj=0,values=hists[i][0]), label=plot_label,zorder=order[i],color=colors[i])
         if stacked==True: 
             if i==0: steps[i] = hists[i]; 
             else:    steps[i] = hists[i] + steps[i-1]; bottom[i] = steps[i-1]
@@ -238,74 +243,90 @@ def plot_var(df: pd.DataFrame, var: str, bins: np.ndarray,
     plt.legend()
     plt.show()
     
-def plot_var_pdg(df: pd.DataFrame, var: str, bins: np.ndarray,
-             df_add: pd.DataFrame = None,
-             label: str = "", title: str = "", 
-             cut_val: list = None):
+def plot_var_pdg(df, var: str, bins: np.ndarray,
+                 label: str = "", title: str = "",
+                 scale: list = None,
+                 cut_val: list = None):
     """
     Plots a variable for each pdg in a stacked histogram.
     
     Parameters
     ----------
-    df: pd.DataFrame
-        input dataframe
+    df: input dataframe or list of dataframes
     var: str
         variable to be plotted, must be a column in the dataframe
     bins: np.ndarray
         histogram binning
-    df_add: pd.DataFrame
-        if specified, adds this dataframe to the plot with scaling factor set by nue.nue_scale
     label: str
         x-axis label
     title: str
         title of the plot
+    scale: list of floats
+        if specified, scales the histograms from df by the specified values 
     cut_val: list
         if specified, plots vertical lines at the specified values
     """
-    histtype="step"
-    lw = 2
-    other_df = df.copy()
-    add_other_df = df_add.copy() if df_add is not None else None
-    for key in pdg_dict:
-        pdg_value = pdg_dict[key]["pdg"]
-        # ignore neutrons and other (take care of "other" more explicitly at the end)
-        if (key == "neu" or key == "other"):
-            continue
-        this_df = df[df.pfp_shw_truth_p_pdg==pdg_value]
-        # if we have the additional dataframe, need to scale it 
-        if (df_add is not None):
-            add_df = df_add[df_add.pfp_shw_truth_p_pdg==pdg_value]
-            hist_values, bin_edges = np.histogram(this_df[var],bins=bins)
-            add_hist_values, add_bin_edges = np.histogram(add_df[var],bins=bins)
-            plt.step(x=bin_edges[:-1], y=np.round((hist_values + nue_scale*add_hist_values)),where="post",linewidth=lw, label=key,zorder=5)
-        # if we don't have the additional dataframe, just plot the histogram
-        elif (df_add is None and len(this_df)>0):
-            plt.hist(this_df[var],bins=bins,histtype=histtype,lw=lw,label=key)
-        
-        # if the pdg is not found within the dict, make sure to save it in "other_df"
-        other_df = other_df[other_df.pfp_shw_truth_p_pdg!=pdg_value]
-        if (df_add is not None):
-            add_other_df = add_other_df[add_other_df.pfp_shw_truth_p_pdg!=pdg_value]    
+    if (type(df) is not list): df = [df]
+    if scale == None: scale = list(np.ones(len(df)))
+    if (len(scale) != len(df)): 
+        print("Error: scale must be the same length as df")
+        return 
     
-    # if there are other pdgs
-    if (len(other_df)>0):
-        if (df_add is not None):
-            hist_values, bin_edges = np.histogram(other_df[var],bins=bins)
-            add_hist_values, add_bin_edges = np.histogram(add_other_df[var],bins=bins)
-            plt.step(x=bin_edges[:-1], y=np.round((hist_values + nue_scale*add_hist_values)),where="post",linewidth=lw, label="other",zorder=5)
-        else:
-            plt.hist(other_df[var],bins=bins,histtype=histtype,lw=lw,label="other")
+    bin_steps   = bins[1:]
+    bin_centers = (bins[:-1] + bins[1:])/2
+    bin_spacing = bins[1] - bins[0]
+    
+    hists   = np.zeros((len(pdg_dict)-1,len(bin_steps)))
+    steps   = np.zeros((len(pdg_dict)-1,len(bin_steps))) # for the step plot
+    bottom  = np.zeros((len(pdg_dict)-1,len(bin_steps))) # for the bar plot 
+    order   = np.arange(len(pdg_dict)-1,0,step=-1)
+    
+    other_df = []
+    for idx in range(len(df)):
+        this_df = df[idx]
+        this_scale = scale[idx]
+        this_other = df[idx].copy() 
+        for i, key in enumerate(list(pdg_dict.keys())): 
+            pdg_value = pdg_dict[key]["pdg"]
+            # ignore neutrons and other (take care of "other" more explicitly at the end)
+            if (key == "n" or key == "other"):
+                continue
+            pdg_df = this_df[abs(this_df.pfp_shw_truth_p_pdg)==pdg_value]
+            hist, _____ = np.histogram(pdg_df[var],bins=bins)
+            hists[i] = hists[i] + this_scale*hist
+            this_other = this_other[this_other.pfp_shw_truth_p_pdg!=pdg_value]
+        other_df.append(this_other)
+    
+    for idx in range(len(other_df)):
+        this_scale = scale[idx]
+        this_other = other_df[idx]
+        if len(this_other)!=0: 
+            hist, _____ = np.histogram(this_other[var],bins=bins)
+            hists[-1] = hists[-1] + this_scale*hist        
+
+    for i in range(len(hists)): 
+        plot_label = list(pdg_dict.keys())[i]
+        if i == len(hists)-1: plot_label = "other"
+        if i==0: steps[i] = hists[i]; 
+        else:    steps[i] = hists[i] + steps[i-1]; bottom[i] = steps[i-1]
+        # need to append a value at the beginning so that the step will be plotted across the first bin
+        fix_step = np.insert(steps[i],obj=0,values=steps[i][0])
+        plt.step(bins,fix_step, label=plot_label, zorder=order[i])
 
     ymin, ymax = plt.ylim()
+    for i in range(len(hists)): 
+        plt.bar( bin_centers, hists[i], bottom=bottom[i], width=bin_spacing, alpha=0.25)
+            
     if cut_val != None:
         for i in range(len(cut_val)):
             plt.vlines(cut_val[i],ymin,ymax,lw=2,color="gray",linestyles="--",zorder=6)
-    plt.ylim(ymin,ymax)
+    plt.ylim(0,ymax)
     
-    if label == "":
-        plt.xlabel(var)
-    if title == "":
-        plt.title(var+" distribution (separated by particle type)")      
+    if label == "": plt.xlabel(var)
+    else: plt.xlabel(label)
+    if title == "": plt.title(var+" distribution (separated by particle type)")      
+    else: plt.title(title)
+
     plt.legend()
     plt.show()
 
@@ -516,21 +537,29 @@ def cutContainment(df: pd.DataFrame, whereTrkCont: bool=True, whereShwCont: bool
     shw_col: str
         column name of the shower end position
     """
-    df["pfp_cont"] = True
-    if whereTrkCont:
-        df["pfp_cont"] = np.where(((df.pfp_trackScore >= 0.5) & 
-                                   ((abs(df[trk_col+"x"]) > 195) |
-                                     (df[trk_col+"y"] < -195)  | (df[trk_col+"y"] > 195) &
-                                     (df[trk_col+"z"] < 5)    | (df[trk_col+"z"] > 495))),
-                                     False,df["pfp_cont"])
-    if whereShwCont: 
-        df["pfp_cont"] = np.where(((df.pfp_trackScore < 0.5) & 
-                                   ((abs(df[shw_col+"x"]) > 195) |
-                                     (df[shw_col+"y"] < -195)  | (df[shw_col+"y"] > 195) &
-                                     (df[shw_col+"z"] < 5)    | (df[shw_col+"z"] > 495))),
-                                     False,df["pfp_cont"])
-    maskPfpCont= ~(df.groupby(["ntuple","entry","rec.slc__index"])['pfp_cont'].transform(lambda x: (x==False).any()))
-    return df[maskPfpCont]
+    df["shw_exit"] = 0 
+    df["trk_exit"] = 0
+
+    df["trk_exit"] = np.where(((df.pfp_trackScore >= 0.5) & 
+                                ((abs(df[trk_col+"x"]) > 195) |
+                                    (df[trk_col+"y"] < -195)  | (df[trk_col+"y"] > 195) &
+                                    (df[trk_col+"z"] < 5)    | (df[trk_col+"z"] > 495))),
+                                    1,df["trk_exit"])
+    df["shw_exit"] = np.where(((df.pfp_trackScore < 0.5) & 
+                                ((abs(df[shw_col+"x"]) > 195) |
+                                    (df[shw_col+"y"] < -195)  | (df[shw_col+"y"] > 195) &
+                                    (df[shw_col+"z"] < 5)    | (df[shw_col+"z"] > 495))),
+                                    1,df["shw_exit"])
+    # sum the number of exiting trks/shws 
+    pfp_exit_df = df.groupby(["ntuple","entry","rec.slc__index"]).agg(ntrk_exit = ('trk_exit','sum'),
+                                                                      nshw_exit = ('shw_exit','sum')).reset_index()
+    # require that there are no exiting trks/shw if specified
+    if (whereTrkCont): pfp_exit_df = pfp_exit_df.query("ntrk_exit==0")
+    if (whereShwCont): pfp_exit_df = pfp_exit_df.query("nshw_exit==0")
+
+    df = df.merge(pfp_exit_df[["ntuple","entry","rec.slc__index"]],how="right")
+    df.drop(columns=["trk_exit","shw_exit"],inplace=True)
+    return df
 
 ### MASKS ### 
 
@@ -584,7 +613,8 @@ def getPDGCounts(nuprim_df: pd.DataFrame):
                                             flat_nuprim_df.prim_abs_pdg)
 
     # if the pdg is -1, it's "invisible"
-    flat_nuprim_df["prim_abs_pdg"] = np.where(flat_nuprim_df.prim_depE < 0.05,
+    # the pi0 is always invisible! explicitly specify to keep it
+    flat_nuprim_df["prim_abs_pdg"] = np.where(flat_nuprim_df.eval("(prim_depE < 0.05) & (prim_abs_pdg!=111)"),
                                             -1,
                                             flat_nuprim_df["prim_abs_pdg"])
 
@@ -630,7 +660,7 @@ def getPFP(slcshw_df: pd.DataFrame,
     """
     
     slcshw_df = flatten_df(slcshw_df)
-    slcshw_df["nu_index"] = slcshw_df["slc_tmatch_idx"]
+    slcshw_df["rec.mc.nu__index"] = slcshw_df["slc_tmatch_idx"]
     slcshw_df = shw_energy_fix(slcshw_df)
     # primary pfp corresponds to the neutrino, drop it
     if cheat==False:
